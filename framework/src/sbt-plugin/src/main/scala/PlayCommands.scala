@@ -69,11 +69,13 @@ trait PlayCommands {
   val playCommonClassloaderTask = (scalaInstance, dependencyClasspath in Compile) map { (si, classpath) =>
 
     lazy val commonJars: PartialFunction[java.io.File, java.net.URL] = {
-      case jar if jar.getName.startsWith("h2-") => jar.toURI.toURL
+      case jar if jar.getName.startsWith("h2-") || jar.getName == "h2.jar" => jar.toURI.toURL
     }
 
     if (commonClassLoader == null) {
-      commonClassLoader = new java.net.URLClassLoader(classpath.map(_.data).collect(commonJars).toArray, si.loader)
+      commonClassLoader = new java.net.URLClassLoader(classpath.map(_.data).collect(commonJars).toArray, si.loader) {
+        override def toString = "Common ClassLoader: " + getURLs.map(_.toString).mkString(",")
+      }
     }
 
     commonClassLoader
@@ -152,7 +154,7 @@ trait PlayCommands {
 
     val libs = {
       dependencies.filter(_.data.ext == "jar").map { dependency =>
-        dependency.data -> (packageName + "/lib/" + (dependency.metadata.get(AttributeKey[ModuleID]("module")).map { module =>
+       dependency.data -> (packageName + "/lib/" + (dependency.metadata.get(AttributeKey[ModuleID]("module-id")).map { module =>
           module.organization + "." + module.name + "-" + module.revision + ".jar"
         }.getOrElse(dependency.data.getName)))
       } ++ packaged.map(jar => jar -> (packageName + "/lib/" + jar.getName))
@@ -163,7 +165,10 @@ trait PlayCommands {
     val config = Option(System.getProperty("config.file"))
 
     IO.write(start,
-      """java "$@" -cp "`dirname $0`/lib/*" """ + config.map(_ => "-Dconfig.file=`dirname $0`/application.conf ").getOrElse("") + """play.core.server.NettyServer `dirname $0`""" /* */ )
+      """#!/usr/bin/env sh
+
+exec java $* -cp "`dirname $0`/lib/*" """ + config.map(_ => "-Dconfig.file=`dirname $0`/application.conf ").getOrElse("") + """play.core.server.NettyServer `dirname $0`
+""" /* */ )
     val scripts = Seq(start -> (packageName + "/start"))
 
     val other = Seq((root / "README") -> (packageName + "/README"))
@@ -324,9 +329,9 @@ trait PlayCommands {
 
     val start = target / "start"
     IO.write(start,
-      """|#! /usr/bin/env sh
+      """|#!/usr/bin/env sh
          |
-         |exec java "$@" -cp "`dirname $0`/staged/*" play.core.server.NettyServer `dirname $0`/..
+         |exec java $@ -cp "`dirname $0`/staged/*" play.core.server.NettyServer `dirname $0`/..
          |""".stripMargin)
 
     "chmod a+x %s".format(start.getAbsolutePath) !
@@ -589,9 +594,9 @@ trait PlayCommands {
     println()
 
     val sbtLoader = this.getClass.getClassLoader
-    val commonLoader = Project.evaluateTask(playCommonClassloader, state).get.toEither.right.get
+    val commonLoader = Project.runTask(playCommonClassloader, state).get._2.toEither.right.get
 
-    val maybeNewState = Project.evaluateTask(dependencyClasspath in Compile, state).get.toEither.right.map { dependencies =>
+    val maybeNewState = Project.runTask(dependencyClasspath in Compile, state).get._2.toEither.right.map { dependencies =>
 
       val classpath = dependencies.map(_.data.toURI.toURL).toArray
 
@@ -692,7 +697,7 @@ trait PlayCommands {
           //Then launch compile
           PlayProject.synchronized {
             val start = System.currentTimeMillis
-            Project.evaluateTask(compile in Compile, newState).get.toEither.right.map { _ =>
+            Project.runTask(compile in Compile, newState).get._2.toEither.right.map { _ =>
               val duration = System.currentTimeMillis - start
               val formatted = duration match {
                 case ms if ms < 1000 => ms + "ms"
@@ -765,7 +770,7 @@ trait PlayCommands {
 
     val extracted = Project.extract(state)
 
-    Project.evaluateTask(compile in Compile, state).get.toEither match {
+    Project.runTask(compile in Compile, state).get._2.toEither match {
       case Left(_) => {
         println()
         println("Cannot start with errors.")
@@ -774,7 +779,7 @@ trait PlayCommands {
       }
       case Right(_) => {
 
-        Project.evaluateTask(dependencyClasspath in Runtime, state).get.toEither.right.map { dependencies =>
+        Project.runTask(dependencyClasspath in Runtime, state).get._2.toEither.right.map { dependencies =>
 
           val classpath = dependencies.map(_.data).map(_.getCanonicalPath).reduceLeft(_ + java.io.File.pathSeparator + _)
 
@@ -848,7 +853,7 @@ trait PlayCommands {
     println(play.console.Console.logo)
     println("""
             |> Type "help play" or "license" for more information.
-            |> Type "exit" or use Ctrl+C to leave this console.
+            |> Type "exit" or use Ctrl+D to leave this console.
             |""".stripMargin)
 
     state.copy(
@@ -858,7 +863,7 @@ trait PlayCommands {
 
   val h2Command = Command.command("h2-browser") { state: State =>
     try {
-      val commonLoader = Project.evaluateTask(playCommonClassloader, state).get.toEither.right.get
+      val commonLoader = Project.runTask(playCommonClassloader, state).get._2.toEither.right.get
       val h2ServerClass = commonLoader.loadClass(classOf[org.h2.tools.Server].getName)
       h2ServerClass.getMethod("main", classOf[Array[String]]).invoke(null, Array.empty[String])
     } catch {
@@ -893,7 +898,7 @@ trait PlayCommands {
 
     val extracted = Project.extract(state)
 
-    Project.evaluateTask(dependencyClasspath in Runtime, state).get.toEither match {
+    Project.runTask(dependencyClasspath in Runtime, state).get._2.toEither match {
       case Left(_) => {
         println()
         println("Cannot compute the classpath")
@@ -949,7 +954,7 @@ trait PlayCommands {
 
     val extracted = Project.extract(state)
 
-    Project.evaluateTask(computeDependencies, state).get.toEither match {
+    Project.runTask(computeDependencies, state).get._2.toEither match {
       case Left(_) => {
         println()
         println("Cannot compute dependencies")
