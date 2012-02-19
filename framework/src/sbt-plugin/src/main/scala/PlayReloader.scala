@@ -17,8 +17,8 @@ trait PlayReloader {
 
       def projectPath = extracted.currentProject.base
 
-      val watchFiles = {
-        ((extracted.currentProject.base / "db" / "evolutions") ** "*.sql").get ++ ((extracted.currentProject.base / "conf") ** "*").get
+      def watchFiles = {
+        ((extracted.currentProject.base / "conf") ** "*").get
       }
 
       // ----- Internal state used for reloading is kept here
@@ -181,11 +181,23 @@ trait PlayReloader {
           }
         }).map(remapProblemForGeneratedSources)
       }
+      
+      private val classLoaderVersion = new java.util.concurrent.atomic.AtomicInteger(0)
 
       private def newClassLoader = {
         val loader = new java.net.URLClassLoader(
           Project.evaluateTask(dependencyClasspath in Runtime, state).get.toEither.right.get.map(_.data.toURI.toURL).toArray,
-          baseLoader)
+          baseLoader) {
+            
+            val version = classLoaderVersion.incrementAndGet
+            
+            override def toString = {
+              "ReloadableClassLoader(v" + version + ") {" + {
+                getURLs.map(_.toString).mkString(", ")
+              } + "}"
+            }
+            
+          }
         currentApplicationClassLoader = Some(loader)
         loader
       }
